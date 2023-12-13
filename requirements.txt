@@ -1,0 +1,6 @@
+uvicorn~=0.24.0.post1
+fastapi~=0.105.0
+
+python-dotenv~=1.0.0
+slack_sdk
+slack_bolt
