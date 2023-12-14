@@ -4,3 +4,5 @@ fastapi~=0.105.0
 python-dotenv~=1.0.0
 slack_sdk
 slack_bolt
+
+starlette~=0.27.0

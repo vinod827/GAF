@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Form, HTTPException, Request
-from typing import Optional
+from fastapi import FastAPI, Form, HTTPException, Request, Body
+from typing import Optional, Dict, Union, List
 import slack_sdk
 import os
 from pathlib import Path
@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 import logging
 from slack_sdk.errors import SlackApiError
 from fastapi.responses import JSONResponse
+from urllib.parse import unquote
+import json
+
+from starlette.responses import JSONResponse
 
 logging.basicConfig(level=logging.DEBUG)
 env_path = Path('.') / '.env'
@@ -19,45 +23,81 @@ client = slack_sdk.WebClient(SLACK_BOT_USER_OAUTH_TOKEN)
 app = FastAPI()
 
 
-@app.post("/")
-async def read_root(
-        token: Optional[str] = Form(...),
-        user_id: Optional[str] = Form(...),
-        user_name: Optional[str] = Form(...),
-) -> dict:
+@app.post("/request-repo-access")
+async def read_repo_access_request(
+        token: str = Form(...),
+        user_id: str = Form(...),
+        user_name: str = Form(...),
+        project: str = Form("", alias="text"),
+        role: str = Form("", alias="text"),
+) -> JSONResponse:
     # Verify the Slack token
     if token != SLACK_VERIFICATION_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid Slack token")
-    try:
-        print('user_id:', user_id, 'user_name:', user_name)
-        # Use the WebClient to send a message with approve and deny buttons
-        message = {
-            "channel": "#test",
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": "Approval Request"},
-                },
-                {
-                    "type": "actions",
-                    "block_id": "approval_request",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Approve"},
-                            "action_id": "approve_button",
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
-                            "action_id": "deny_button",
-                        },
-                    ],
-                },
-            ],
-        }
 
-        response = client.chat_postMessage(**message)
+    # Extract the project name from the command text
+    if not project:
+        return JSONResponse(content={"text": "Please provide a project name in the Slack command, for instance - "
+                                             "/request-repo-access pylon"}, status_code=200)
+
+    try:
+        print('user_id:', user_id, 'user_name:', user_name, 'project:', project)
+        # Use the WebClient to send a message with approve and deny buttons
+        # Set the channel and message text
+        channel = "#test"
+        message_text = f":memo: Access Request for GitLab project repository *{project}* from *{user_name}*"
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": message_text},
+            },
+            {
+                "type": "actions",
+                "block_id": "approval_request",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": ":white_check_mark: Approve"},
+                        "action_id": "approve_button",
+                        "style": "primary",  # Set the style to "primary" for a green button
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": ":x: Deny"},
+                        "action_id": "deny_button",
+                        "style": "danger",  # Set the style to "danger" for a red button
+                    },
+                    {
+                        "type": "static_select",
+                        "action_id": "approval_duration",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": ":calendar: Select duration for Maintainer role",
+                        },
+                        "options": [
+                            {
+                                "text": {"type": "plain_text", "text": ":clock1: 15 days"},
+                                "value": "15",
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": ":clock3: 30 days"},
+                                "value": "30",
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": ":infinity: Always"},
+                                "value": "A",
+                            },
+                        ]
+                    }
+                ],
+            },
+        ]
+
+        response = client.chat_postMessage(
+            channel=channel,
+            text=message_text,
+            blocks=blocks
+        )
 
         # Check the API response for success
         if not response["ok"]:
@@ -67,7 +107,7 @@ async def read_root(
         response_text = f"Approval request sent to {user_name}."
         print(response_text)
         # Send the response back to Slack
-        return {
+        return JSONResponse(content={
             "response_type": "in_channel",
             "blocks": [
                 {
@@ -78,7 +118,7 @@ async def read_root(
                     }
                 }
             ]
-        }
+        })
 
     except SlackApiError as e:
         print(f"Slack API error: {e.response}")
@@ -86,34 +126,76 @@ async def read_root(
 
 
 @app.post("/interactive-endpoint")
-async def interactive_endpoint(request: Request):
+async def interactive_endpoint(payload: str = Body(...)):
     try:
-        # Log the raw content of the request body
-        raw_content = await request.body()
-        print(f"Raw Content: {raw_content.decode()}")
+        # URL decode the payload
+        decoded_payload = unquote(payload)
+        print('decoded_payload:', decoded_payload)
+        payload_data = decoded_payload
 
-        payload = await request.json()
-        token = payload.get("token", "")
+        contains_equal_sign = '=' in decoded_payload
+        if contains_equal_sign:
+            # Split the string at the equal sign
+            split_result = decoded_payload.split('=')
+
+            # Extract the second part of the split result (after the equal sign)
+            payload_data = split_result[1]
+
+            # Add a check for empty payload
+            if not payload_data:
+                return {"error": "Empty payload"}
+
+        # Parse the payload as JSON
+        payload_json = json.loads(payload_data)
+        print('payload_json:', payload_json)
+
+        # Log the parsed payload
+        token = payload_json.get("token", "")
 
         # Verify the Slack token
         if token != SLACK_VERIFICATION_TOKEN:
             raise HTTPException(status_code=401, detail="Invalid Slack token")
 
-        callback_id = payload.get("callback_id", "")
+        actions = payload_json.get("actions", [])
+        for action in actions:
+            # Check if the action is related to the dropdown
+            if action["action_id"] == "approval_duration":
+                # Ignore the action for the dropdown and return early
+                return JSONResponse(content={"message": "Dropdown value selected"}, status_code=200)
 
-        if callback_id == "approval_request":
-            # Handle approval request actions
-            actions = payload.get("actions", [])
-            for action in actions:
-                if action.get("action_id") == "approve_button":
-                    # Handle approve action
-                    user_id = payload.get("user", {}).get("id")
-                    # Trigger your backend action for approval
+            if action["action_id"] == "approve_button":
+                # Handle approve action
+                # Trigger your backend action for approval
+                print("Request approved")
+                return JSONResponse(content={"message": "Approved"}, status_code=200)
 
-                elif action.get("action_id") == "deny_button":
-                    # Handle deny action
-                    user_id = payload.get("user", {}).get("id")
-                    # Trigger your backend action for denial
+            elif action["action_id"] == "deny_button":
+                # Handle deny action
+                # Return a message with a text box for remarks
+                print("Request denied")
+                return JSONResponse(
+                    content={
+                        "message": "Please provide remarks for denying the request",
+                        "attachments": [
+                            {
+                                "text": "Remarks:",
+                                "fallback": "You are unable to enter remarks.",
+                                "callback_id": "deny_remarks",
+                                "color": "#3AA3E3",
+                                "attachment_type": "default",
+                                "actions": [
+                                    {
+                                        "name": "remarks",
+                                        "text": "Enter Remarks",
+                                        "type": "text",
+                                        "placeholder": "Enter your remarks here"
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    status_code=200
+                )
 
         return JSONResponse(content={"message": "Interaction handled"}, status_code=200)
 
