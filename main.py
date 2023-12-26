@@ -1,69 +1,97 @@
-from fastapi import FastAPI, Form, HTTPException
 from typing import Optional
 import slack_sdk
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
-import logging
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+from slack_bolt.request import BoltRequest
 
 logging.basicConfig(level=logging.DEBUG)
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
 
 SLACK_VERIFICATION_TOKEN = os.environ['SLACK_VERIFICATION_TOKEN']
-SLACK_BOT_USER_OAUTH_TOKEN = os.environ['SLACK_BOT_USER_OAUTH_TOKEN']
+SLACK_SIGNING_SECRET = os.environ['SLACK_SIGNING_SECRET']
+SLACK_BOT_TOKEN = os.environ['SLACK_BOT_TOKEN']
+SLACK_APP_TOKEN = os.environ['SLACK_APP_TOKEN']
 
-client = slack_sdk.WebClient(SLACK_BOT_USER_OAUTH_TOKEN)
-app = FastAPI()
+# Install the Slack app and get xoxb- token in advance
+app = App(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 
 
-@app.post("/")
-async def read_root(
-        token: Optional[str] = Form(...),
-        user_id: Optional[str] = Form(...),
-        user_name: Optional[str] = Form(...),
-) -> dict:
-    # Verify the Slack token
-    if token != SLACK_VERIFICATION_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid Slack token")
+# Listening to events
+# When a user joins the workspace, send a message in a predefined channel asking them to introduce themselves
+# @app.event("team_join")
+# def ask_for_introduction(event, say):
+#     welcome_channel_id = "C06BW33BL8H"
+#     user_id = event["user"]
+#     text = f"Welcome to the team, <@{user_id}>! 🎉 You can introduce yourself in this channel."
+#     say(text=text, channel=welcome_channel_id)
 
-    print('user_id:', user_id, 'user_name:', user_name)
-    client.chat_postMessage(channel=user_id, text='hello')
+@app.message()
+def handle_message(payload, say, logger, context):
+    print(payload)
 
-    result = client.users_info(
-        user=user_id
-    )
+    event = payload.get('event', {})
+    user_id = event.get('user')
+    bot_id = context.get('botId')
+    text = event.get('text')
 
-    # Extract email address from the result
-    email = result["user"]["profile"]["email"]
+    logger.debug(payload)
+    say(text)
+#
+# @app.event("message")
+# def handle_message(event, say, context):
+#     # user = event["user"]
+#     request: BoltRequest = context.request
+#
+#     # Access custom headers
+#     channel_name_header = request.headers.get("Channel_Name")
+#     print("Channel Name Header:", channel_name_header)
+#
+#     print('event:::::::::::::::::::', event)
+#     print('context............', context)
+#     text = event["text"]
+#     channel = event["channel"]
+#     target_channel = '#slave2_public'
+#
+#     # Access query parameters
+#     # query_params = context.request.query
+#     # print("Query Parameters:", query_params)
+#
+#     # print("event->>", event["headers"])
+#     # Access channel name from the payload
+#     # channel_name = event.get("channel_name")
+#     # headers = event.get("headers", {})  # Access headers from the event data
+#     # print("headers:::", headers)
+#     # channel_name = headers.get("Channel_Name")
+#     # print("Channel Name:", channel_name)
+#
+#     print("************************")
+#     # Check if the message is from the desired channel
+#     if channel == "C06BW33BL8H":  # Replace with your actual channel ID
+#         # Do something with the received message
+#         print(f"Received message '{text}' from user in channel {channel}")
+#         app.client.chat_postMessage(channel=target_channel, text='hello')
+#         print("message sent")
 
-    # Process the slash command and generate a response
-    response_text = f"Hello, {user_name}. Your email address is {email}"
 
-    #result = client.users_list()
-    #users = result["members"]
+### All Slash Commands ####
+@app.command("/myapp")
+def say_hi_to_slash_command(ack, say, body):
+    # Acknowledge command request
+    ack()
+    text = body['text']
 
-    #print(users)
-    # Process the slash command and generate a response
-    #user_list_text = "\n".join([f"{user['first_name']} ({user['id']})" for user in users])
-    #response_text = f"List of all users:\n{user_list_text}"
-
-    # Send the response back to Slack
-    return {
-        "response_type": "in_channel",
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": response_text
-                }
-            }
-        ]
-    }
+    if text:
+        say(f"{body['text']}")
+    else:
+        ack(f":wave: Hi there! <@{body['user_id']}>")
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+    handler.start()
