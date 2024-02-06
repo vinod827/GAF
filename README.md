@@ -1,1 +1,1 @@
-GitAccessFlow - Manages the access of Gitlab repositories using Slack application
+GAF - Manages the access of Gitlab repositories using Slack application
